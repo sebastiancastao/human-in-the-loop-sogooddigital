@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { supabaseRestServer } from "@/lib/supabase/restServer";
+import { buildCompanyOrFilter, companyUrlVariants, canonicalizeCompanyUrl } from "@/lib/company";
 
 type ContextRow = {
   id: string;
@@ -32,11 +33,15 @@ export async function GET(
 
   let rows: ContextRow[] = [];
   if (companyUrl) {
+    const companyCanon = canonicalizeCompanyUrl(companyUrl);
+    const variants = companyUrlVariants(companyUrl ?? companyCanon);
+    const companyOr = buildCompanyOrFilter(variants);
+    const eqCompany = variants.length === 1 ? variants[0] : (companyUrl ?? companyCanon!);
     rows = await supabaseRestServer<ContextRow[]>("/sogood_rag", {
       query: {
         select: "id,company,type,title,social_entry,context,created_at",
         type: "eq.context",
-        company: `eq.${companyUrl}`,
+        ...(companyOr ? { or: companyOr } : { company: `eq.${eqCompany}` }),
         order: "created_at.asc",
       },
     });

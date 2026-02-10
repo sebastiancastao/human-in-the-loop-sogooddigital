@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useCallback } from "react";
 import type { Conversation, Message } from "@/types/chat";
+import { canonicalizeCompanyUrl } from "@/lib/company";
 import { Sidebar } from "./Sidebar";
 import { ChatArea } from "./ChatArea";
 import { MenuIcon } from "./Icons";
@@ -89,11 +90,19 @@ export function ChatApp() {
 
       if (isFirstMessage) {
         // Reuse an existing conversation for the same company (one conversation per company).
-        const existing = conversations.find(
-          (c) =>
-            c.id !== targetId &&
-            c.socialEntry?.trim() === trimmed
-        );
+        const targetCompany = canonicalizeCompanyUrl(trimmed);
+        const existing = conversations.find((c) => {
+          if (c.id === targetId) return false;
+
+          const cCompany =
+            c.company ?? canonicalizeCompanyUrl(c.socialEntry);
+
+          // If both are URLs, match by canonical company URL.
+          if (targetCompany && cCompany) return targetCompany === cCompany;
+
+          // Otherwise fall back to exact social-entry matching (non-URL queries).
+          return (c.socialEntry?.trim() ?? "") === trimmed;
+        });
 
         if (existing) {
           // Drop the empty placeholder (from "New Chat") if one was created.

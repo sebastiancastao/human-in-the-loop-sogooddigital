@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useEffect } from "react";
+import { useRef, useEffect, useMemo, useState } from "react";
 import type { Conversation } from "@/types/chat";
 import { MessageBubble } from "./MessageBubble";
 import { ChatInput } from "./ChatInput";
@@ -13,6 +13,12 @@ interface ChatAreaProps {
 
 export function ChatArea({ conversation, onSendMessage, isLoading }: ChatAreaProps) {
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const [resultsOpen, setResultsOpen] = useState(true);
+
+  const results = useMemo(() => {
+    const items = conversation?.results ?? [];
+    return Array.isArray(items) ? items : [];
+  }, [conversation?.results]);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -40,6 +46,43 @@ export function ChatArea({ conversation, onSendMessage, isLoading }: ChatAreaPro
     <div className="flex flex-1 flex-col min-h-0">
       <div className="flex-1 overflow-y-auto scrollbar-thin">
         <div className="max-w-2xl mx-auto px-4 py-6 space-y-4">
+          {results.length > 0 && (
+            <div className="rounded-2xl border border-border bg-surface px-4 py-3">
+              <button
+                type="button"
+                onClick={() => setResultsOpen((v) => !v)}
+                className="w-full flex items-center justify-between text-left"
+              >
+                <div className="text-sm font-medium text-foreground">
+                  Results ({results.length})
+                </div>
+                <div className="text-xs text-muted">
+                  {resultsOpen ? "Hide" : "Show"}
+                </div>
+              </button>
+
+              {resultsOpen && (
+                <div className="mt-3 space-y-2">
+                  {results.map((r) => (
+                    <div
+                      key={r.id}
+                      className="rounded-xl border border-border bg-background px-3 py-2"
+                    >
+                      {r.title?.trim() && (
+                        <div className="text-xs font-medium text-foreground/90 mb-1 truncate">
+                          {r.title}
+                        </div>
+                      )}
+                      <div className="text-xs whitespace-pre-wrap break-words text-foreground/80 max-h-44 overflow-y-auto scrollbar-thin pr-1">
+                        {r.content}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
           {conversation.messages.map((msg) => (
             <MessageBubble key={msg.id} message={msg} />
           ))}

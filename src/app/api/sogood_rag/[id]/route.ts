@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import type { Conversation, Message } from "@/types/chat";
 import { supabaseRestServer } from "@/lib/supabase/restServer";
+import { buildCompanyOrFilter, canonicalizeCompanyUrl, companyUrlVariants } from "@/lib/company";
 
 type SogoodRagRow = {
   id: string;
@@ -40,6 +41,7 @@ export async function GET(
     }),
     createdAt: new Date(r.created_at).getTime(),
     type: r.type ?? "results",
+    company: canonicalizeCompanyUrl(r.company) ?? canonicalizeCompanyUrl(r.social_entry) ?? undefined,
     socialEntry: r.social_entry ?? undefined,
     context: r.context ?? undefined,
   };
@@ -96,9 +98,16 @@ export async function DELETE(
   const parentTitle = parent?.[0]?.title ?? null;
 
   if (companyUrl) {
+    const companyCanon = canonicalizeCompanyUrl(companyUrl);
+    const variants = companyUrlVariants(companyUrl ?? companyCanon);
+    const companyOr = buildCompanyOrFilter(variants);
+    const eqCompany = variants.length === 1 ? variants[0] : (companyUrl ?? companyCanon!);
     await supabaseRestServer<void>("/sogood_rag", {
       method: "DELETE",
-      query: { company: `eq.${companyUrl}`, type: "eq.context" },
+      query: {
+        type: "eq.context",
+        ...(companyOr ? { or: companyOr } : { company: `eq.${eqCompany}` }),
+      },
     });
   } else if (parentTitle) {
     // Back-compat: some older rows linked contexts by title.

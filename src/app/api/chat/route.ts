@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { supabaseRestServer } from "@/lib/supabase/restServer";
+import { buildCompanyOrFilter, companyUrlVariants, canonicalizeCompanyUrl } from "@/lib/company";
 
 type InputMessage = { role: "user" | "assistant" | "system"; content: string };
 
@@ -101,8 +102,15 @@ function buildSystemPrompt(args: {
 
 function toTextBlocks(content: unknown): string {
   if (!Array.isArray(content)) return "";
+
+  const isTextBlock = (b: unknown): b is { type: "text"; text?: unknown } => {
+    if (!b || typeof b !== "object") return false;
+    if (!("type" in b)) return false;
+    return (b as { type?: unknown }).type === "text";
+  };
+
   return content
-    .map((b) => (b && typeof b === "object" && (b as any).type === "text" ? String((b as any).text ?? "") : ""))
+    .map((b) => (isTextBlock(b) ? String(b.text ?? "") : ""))
     .join("");
 }
 
@@ -136,18 +144,22 @@ export async function POST(req: Request) {
     }
 
     const companyUrl = p.company ?? null;
+    const companyCanon = canonicalizeCompanyUrl(companyUrl) ?? canonicalizeCompanyUrl(p.social_entry) ?? null;
+    const companyFilterVariants = companyUrlVariants(companyUrl ?? companyCanon);
+    const companyOr = buildCompanyOrFilter(companyFilterVariants);
 
     // Fetch both results and context rows for the company (or by title fallback).
     let resultsRows: RagRow[] = [];
     let contextRows: RagRow[] = [];
 
-    if (companyUrl) {
+    if (companyUrl || companyCanon) {
+      const eqCompany = companyFilterVariants.length === 1 ? companyFilterVariants[0] : (companyUrl ?? companyCanon!);
       [resultsRows, contextRows] = await Promise.all([
         supabaseRestServer<RagRow[]>("/sogood_rag", {
           query: {
             select: "id,title,social_entry,context,created_at",
             type: "eq.results",
-            company: `eq.${companyUrl}`,
+            ...(companyOr ? { or: companyOr } : { company: `eq.${eqCompany}` }),
             id: `neq.${conversationId}`,  // exclude the conversation row itself
             order: "created_at.asc",
             limit: 25,
@@ -157,7 +169,7 @@ export async function POST(req: Request) {
           query: {
             select: "id,title,social_entry,context,created_at",
             type: "eq.context",
-            company: `eq.${companyUrl}`,
+            ...(companyOr ? { or: companyOr } : { company: `eq.${eqCompany}` }),
             order: "created_at.asc",
             limit: 25,
           },
@@ -203,7 +215,7 @@ export async function POST(req: Request) {
     const contexts = toSnippets(contextRows);
 
     const system = buildSystemPrompt({
-      companyUrl,
+      companyUrl: companyCanon ?? companyUrl,
       title: p.title,
       socialEntry: p.social_entry ?? null,
       parentContext: p.context ?? null,
@@ -252,8 +264,11 @@ export async function POST(req: Request) {
       );
     }
 
-    const json = JSON.parse(text) as any;
-    const reply = toTextBlocks(json?.content);
+    const json = JSON.parse(text) as unknown;
+    const content = (json && typeof json === "object" && "content" in json)
+      ? (json as { content?: unknown }).content
+      : undefined;
+    const reply = toTextBlocks(content);
     if (!reply.trim()) {
       return NextResponse.json(
         { error: "Empty model response", raw: json },
@@ -269,4 +284,3 @@ export async function POST(req: Request) {
     );
   }
 }
-

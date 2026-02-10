@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import type { Conversation, Message } from "@/types/chat";
 import { supabaseRestServer } from "@/lib/supabase/restServer";
+import { canonicalizeCompanyUrl } from "@/lib/company";
 
 type SogoodRagRow = {
   id: string;
@@ -23,21 +24,86 @@ export async function GET() {
     },
   });
 
-  const conversations: Conversation[] = rows.map((r) => ({
-    id: r.id,
-    title: r.title,
-    messages: normalizeMessages({
-      conversationId: r.id,
-      createdAt: new Date(r.created_at).getTime(),
+  // Group by company so the UI sees one conversation per company.
+  // (Some datasets also store company URLs with minor variations like trailing slashes or UTM params.)
+  const byCompanyKey = new Map<string, SogoodRagRow[]>();
+  const companyKeyForRow = (r: SogoodRagRow): string => {
+    const canon =
+      canonicalizeCompanyUrl(r.company) ??
+      canonicalizeCompanyUrl(r.social_entry) ??
+      null;
+    if (canon) return `company:${canon}`;
+    return `title:${(r.title ?? "").trim().toLowerCase()}`;
+  };
+
+  for (const r of rows) {
+    const k = companyKeyForRow(r);
+    const arr = byCompanyKey.get(k);
+    if (arr) arr.push(r);
+    else byCompanyKey.set(k, [r]);
+  }
+
+  const groups = Array.from(byCompanyKey.values()).map((group) => {
+    // Choose a "primary" row:
+    // 1) prefer actual chat threads (rows with messages)
+    // 2) prefer rows that have a usable company URL (for linking results/context)
+    // 3) newest row wins ties
+    const sorted = [...group].sort((a, b) => {
+      const aMsgs = Array.isArray(a.messages) ? a.messages.length : 0;
+      const bMsgs = Array.isArray(b.messages) ? b.messages.length : 0;
+      if (aMsgs !== bMsgs) return bMsgs - aMsgs;
+
+      const aCompany = canonicalizeCompanyUrl(a.company) ?? canonicalizeCompanyUrl(a.social_entry);
+      const bCompany = canonicalizeCompanyUrl(b.company) ?? canonicalizeCompanyUrl(b.social_entry);
+      if (Boolean(aCompany) !== Boolean(bCompany)) return aCompany ? -1 : 1;
+
+      return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
+    });
+
+    const primary = sorted[0];
+    const latestAt = Math.max(...group.map((r) => new Date(r.created_at).getTime()));
+    return { primary, latestAt, group };
+  });
+
+  // Sort groups by latest activity (so newly-ingested results bubble the company thread up)
+  groups.sort((a, b) => b.latestAt - a.latestAt);
+
+  const conversations: Conversation[] = groups.map(({ primary: r, group }) => {
+    const createdAt = new Date(r.created_at).getTime();
+    const company = canonicalizeCompanyUrl(r.company) ?? canonicalizeCompanyUrl(r.social_entry) ?? undefined;
+
+    // Build a separate "results" collection from sibling rows (exclude the primary chat thread).
+    // Only include rows that look like ingested results (no chat messages, but have content).
+    const results = group
+      .filter((x) => x.id !== r.id)
+      .filter((x) => !Array.isArray(x.messages) || x.messages.length === 0)
+      .map((x) => ({
+        id: x.id,
+        title: x.title ?? null,
+        content: (x.context ?? x.social_entry ?? "").trim(),
+        createdAt: new Date(x.created_at).getTime(),
+      }))
+      .filter((x) => x.content.length > 0)
+      .sort((a, b) => a.createdAt - b.createdAt);
+
+    return {
+      id: r.id,
+      title: r.title,
+      messages: normalizeMessages({
+        conversationId: r.id,
+        createdAt,
+        socialEntry: r.social_entry ?? undefined,
+        messages: ((r.messages ?? []) as Message[]) ?? [],
+      }),
+      createdAt,
+      type: r.type ?? "results",
+      company,
       socialEntry: r.social_entry ?? undefined,
-      messages: ((r.messages ?? []) as Message[]) ?? [],
-    }),
-    createdAt: new Date(r.created_at).getTime(),
-    type: r.type ?? "results",
-    socialEntry: r.social_entry ?? undefined,
-    // Context now lives in separate rows (type='context'); keep this only if you still write to the column.
-    context: r.context ?? undefined,
-  }));
+      // Context now lives in separate rows (type='context'); keep this only if you still write to the column.
+      context: r.context ?? undefined,
+      results,
+    };
+  });
 
   return NextResponse.json({ conversations });
 }
@@ -53,7 +119,7 @@ export async function POST(req: Request) {
     body.messages.find((m) => m.role === "system")?.content ?? null;
   const firstUser = body.messages.find((m) => m.role === "user")?.content ?? null;
   const socialEntry = body.socialEntry ?? firstSystem ?? firstUser;
-  const company = normalizeCompanyUrl(socialEntry);
+  const company = canonicalizeCompanyUrl(socialEntry);
   const normalizedMessages = normalizeMessages({
     conversationId: body.id,
     createdAt: body.createdAt || Date.now(),
@@ -97,6 +163,7 @@ export async function POST(req: Request) {
     }),
     createdAt: new Date(savedRow.created_at).getTime(),
     type: savedRow.type ?? "results",
+    company: canonicalizeCompanyUrl(savedRow.company) ?? canonicalizeCompanyUrl(savedRow.social_entry) ?? undefined,
     socialEntry: savedRow.social_entry ?? undefined,
     context: savedRow.context ?? undefined,
   };
@@ -136,13 +203,4 @@ function normalizeMessages(args: {
     },
     ...msgs,
   ];
-}
-
-function normalizeCompanyUrl(value: unknown): string | null {
-  if (typeof value !== "string") return null;
-  const v = value.trim();
-  if (!v) return null;
-  // Keep it strict to avoid accidentally storing random text as "company".
-  if (/^https?:\/\/\S+/i.test(v)) return v;
-  return null;
 }
