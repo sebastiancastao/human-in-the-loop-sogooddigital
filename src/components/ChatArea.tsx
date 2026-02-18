@@ -1,17 +1,23 @@
 "use client";
 
 import { useRef, useEffect, useMemo, useState } from "react";
-import type { Conversation } from "@/types/chat";
+import type { Conversation, ConversationResult } from "@/types/chat";
 import { MessageBubble } from "./MessageBubble";
 import { ChatInput } from "./ChatInput";
 
 interface ChatAreaProps {
   conversation: Conversation | null;
   onSendMessage: (content: string) => void;
+  onOpenResultSubchat?: (result: ConversationResult) => void;
   isLoading?: boolean;
 }
 
-export function ChatArea({ conversation, onSendMessage, isLoading }: ChatAreaProps) {
+export function ChatArea({
+  conversation,
+  onSendMessage,
+  onOpenResultSubchat,
+  isLoading,
+}: ChatAreaProps) {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const [resultsOpen, setResultsOpen] = useState(true);
 
@@ -64,9 +70,11 @@ export function ChatArea({ conversation, onSendMessage, isLoading }: ChatAreaPro
               {resultsOpen && (
                 <div className="mt-3 space-y-2">
                   {results.map((r) => (
-                    <div
+                    <button
+                      type="button"
                       key={r.id}
-                      className="rounded-xl border border-border bg-background px-3 py-2"
+                      onClick={() => onOpenResultSubchat?.(r)}
+                      className="w-full text-left rounded-xl border border-border bg-background px-3 py-2 hover:bg-surface-hover transition-colors"
                     >
                       {r.title?.trim() && (
                         <div className="text-xs font-medium text-foreground/90 mb-1 truncate">
@@ -76,7 +84,7 @@ export function ChatArea({ conversation, onSendMessage, isLoading }: ChatAreaPro
                       <div className="text-xs whitespace-pre-wrap break-words text-foreground/80 max-h-44 overflow-y-auto scrollbar-thin pr-1">
                         {r.content}
                       </div>
-                    </div>
+                    </button>
                   ))}
                 </div>
               )}

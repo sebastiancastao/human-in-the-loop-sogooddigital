@@ -10,6 +10,7 @@ export interface ConversationResult {
   title: string | null;
   content: string;
   createdAt: number;
+  socialEntry?: string;
 }
 
 export interface Conversation {

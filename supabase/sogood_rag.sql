@@ -13,6 +13,33 @@ create table if not exists public.sogood_rag (
   created_at timestamptz not null default now()
 );
 
+-- Ensure messages uses jsonb even on older tables where it may have been created as text.
+do $$
+begin
+  if exists (
+    select 1
+    from pg_attribute a
+    join pg_class c on c.oid = a.attrelid
+    join pg_namespace n on n.oid = c.relnamespace
+    where n.nspname = 'public'
+      and c.relname = 'sogood_rag'
+      and a.attname = 'messages'
+      and format_type(a.atttypid, a.atttypmod) <> 'jsonb'
+  ) then
+    execute '
+      alter table public.sogood_rag
+      alter column messages type jsonb
+      using (
+        case
+          when messages is null then ''[]''::jsonb
+          when left(trim(messages::text), 1) in (''['', ''{'') then messages::jsonb
+          else ''[]''::jsonb
+        end
+      )
+    ';
+  end if;
+end $$;
+
 alter table public.sogood_rag
   add column if not exists company text;
 

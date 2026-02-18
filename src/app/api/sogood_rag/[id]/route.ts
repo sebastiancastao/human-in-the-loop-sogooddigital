@@ -9,8 +9,8 @@ type SogoodRagRow = {
   type: string | null;
   social_entry: string | null;
   context: string | null;
-  title: string;
-  messages: Message[] | null;
+  title: string | null;
+  messages: unknown;
   created_at: string;
 };
 
@@ -32,12 +32,18 @@ export async function GET(
 
   const conversation: Conversation = {
     id: r.id,
-    title: r.title,
     messages: normalizeMessages({
       conversationId: r.id,
       createdAt: new Date(r.created_at).getTime(),
       socialEntry: r.social_entry ?? undefined,
-      messages: (r.messages ?? []) as Message[],
+      messages: parseStoredMessages(r.messages),
+    }),
+    title: resolveConversationTitle({
+      id: r.id,
+      title: r.title,
+      socialEntry: r.social_entry,
+      company: r.company,
+      messages: parseStoredMessages(r.messages),
     }),
     createdAt: new Date(r.created_at).getTime(),
     type: r.type ?? "results",
@@ -78,6 +84,92 @@ function normalizeMessages(args: {
     },
     ...msgs,
   ];
+}
+
+function parseStoredMessages(value: unknown): Message[] {
+  if (Array.isArray(value)) return sanitizeMessages(value, "stored", Date.now());
+  if (typeof value === "string") {
+    try {
+      const parsed = JSON.parse(value) as unknown;
+      if (Array.isArray(parsed)) return sanitizeMessages(parsed, "stored", Date.now());
+      return [];
+    } catch {
+      return [];
+    }
+  }
+  return [];
+}
+
+function sanitizeMessages(
+  value: unknown,
+  conversationId: string,
+  createdAt: number
+): Message[] {
+  if (!Array.isArray(value)) return [];
+
+  const out: Message[] = [];
+  for (const m of value) {
+    if (!m || typeof m !== "object") continue;
+    const role = "role" in m ? (m as { role?: unknown }).role : undefined;
+    const content = "content" in m ? (m as { content?: unknown }).content : undefined;
+    if (role !== "system" && role !== "user" && role !== "assistant") continue;
+    const text = typeof content === "string" ? content : String(content ?? "");
+    out.push({
+      id:
+        "id" in m && typeof (m as { id?: unknown }).id === "string" && (m as { id?: string }).id
+          ? (m as { id: string }).id
+          : `${role}:${conversationId}:${out.length}`,
+      role,
+      content: text,
+      timestamp:
+        "timestamp" in m &&
+        typeof (m as { timestamp?: unknown }).timestamp === "number" &&
+        Number.isFinite((m as { timestamp: number }).timestamp)
+          ? (m as { timestamp: number }).timestamp
+          : createdAt,
+    });
+  }
+
+  return out;
+}
+
+function resolveConversationTitle(args: {
+  id: string;
+  title: string | null | undefined;
+  socialEntry: string | null | undefined;
+  company: string | null | undefined;
+  messages: Message[];
+}): string {
+  const explicit = (args.title ?? "").trim();
+  if (explicit) return explicit;
+
+  const firstUser = args.messages.find((m) => m.role === "user")?.content?.trim();
+  if (firstUser) return ellipsize(firstUser);
+
+  const social = (args.socialEntry ?? "").trim();
+  if (social) return ellipsize(firstLine(social));
+
+  const company = canonicalizeCompanyUrl(args.company);
+  if (company) {
+    try {
+      return new URL(company).hostname;
+    } catch {
+      return company;
+    }
+  }
+
+  return `Chat ${args.id.slice(0, 8)}`;
+}
+
+function firstLine(value: string): string {
+  const line = value.split(/\r?\n/, 1)[0] ?? value;
+  return line.trim();
+}
+
+function ellipsize(value: string, max = 40): string {
+  const trimmed = value.trim();
+  if (trimmed.length <= max) return trimmed;
+  return `${trimmed.slice(0, max - 3).trimEnd()}...`;
 }
 
 export async function DELETE(
